@@ -10,6 +10,7 @@ Default:
     - Lookback 60 days
     - Long rank 1-10
     - Short rank 41-50
+    - Skip short candidates with 7D momentum above 10%
     - Hold 20 days
 
 Run on server:
@@ -160,6 +161,27 @@ def average_quote_volume(rows: list[dict], start: datetime, end: datetime) -> tu
     return sum(values) / len(values), len(values)
 
 
+def close_at_or_before(rows: list[dict], timestamp: datetime) -> float | None:
+    selected = None
+    for row in rows:
+        if row["timestamp"] <= timestamp:
+            selected = row
+        else:
+            break
+    if selected is None:
+        return None
+    return float(selected["close"])
+
+
+def momentum_return(rows: list[dict], end: datetime, days: int) -> float | None:
+    start = end - timedelta(days=days)
+    start_close = close_at_or_before(rows, start)
+    end_close = close_at_or_before(rows, end)
+    if start_close is None or end_close is None or start_close <= 0:
+        return None
+    return end_close / start_close - 1
+
+
 def first_timestamp(data_by_pair: dict[str, list[dict]]) -> datetime:
     return min(rows[0]["timestamp"] for rows in data_by_pair.values() if rows)
 
@@ -206,19 +228,31 @@ def generate_signals(args: argparse.Namespace) -> list[dict]:
                     "pair": pair,
                     "avg_quote_volume": avg_volume,
                     "bar_count": bar_count,
+                    "momentum": momentum_return(rows, signal_time, args.short_momentum_days),
                 }
             )
         ranked.sort(key=lambda row: row["avg_quote_volume"], reverse=True)
-        top = ranked[: args.top_n]
-        if len(top) >= args.short_end_rank:
+        if len(ranked) >= args.short_end_rank:
             hold_until = signal_time + timedelta(days=args.holding_days)
-            for rank, row in enumerate(top, start=1):
-                if 1 <= rank <= args.long_n:
-                    side = "long"
-                elif args.short_start_rank <= rank <= args.short_end_rank:
-                    side = "short"
-                else:
+            selected = []
+            for rank, row in enumerate(ranked[: args.long_n], start=1):
+                selected.append((rank, row, "long"))
+
+            short_count = 0
+            for rank, row in enumerate(ranked[args.short_start_rank - 1 :], start=args.short_start_rank):
+                momentum = row["momentum"]
+                if momentum is not None and momentum > args.short_momentum_max:
                     continue
+                selected.append((rank, row, "short"))
+                short_count += 1
+                if short_count >= args.short_count:
+                    break
+
+            if short_count < args.short_count:
+                signal_time += timedelta(days=args.rebalance_days)
+                continue
+
+            for rank, row, side in selected:
                 signals.append(
                     {
                         "rank_date": expected_open_time.date().isoformat(),
@@ -232,6 +266,7 @@ def generate_signals(args: argparse.Namespace) -> list[dict]:
                         "rank": rank,
                         "avg_quote_volume": row["avg_quote_volume"],
                         "lookback_bar_count": row["bar_count"],
+                        "momentum_return": row["momentum"],
                     }
                 )
         signal_time += timedelta(days=args.rebalance_days)
@@ -253,6 +288,7 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         "rank",
         "avg_quote_volume",
         "lookback_bar_count",
+        "momentum_return",
     ]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -275,6 +311,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--long-n", type=int, default=10)
     parser.add_argument("--short-start-rank", type=int, default=41)
     parser.add_argument("--short-end-rank", type=int, default=50)
+    parser.add_argument("--short-count", type=int, default=10)
+    parser.add_argument("--short-momentum-days", type=int, default=7)
+    parser.add_argument("--short-momentum-max", type=float, default=0.10)
     parser.add_argument("--min-lookback-bars", type=int, default=360)
     return parser.parse_args()
 
