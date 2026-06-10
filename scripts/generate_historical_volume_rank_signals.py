@@ -107,9 +107,13 @@ def load_pair_data(data_dir: Path, pair: str, timeframe: str) -> list[dict]:
     return []
 
 
-def load_pairs(config_path: Path) -> list[str]:
+def load_config_pair_settings(config_path: Path) -> tuple[list[str], set[str]]:
     config = json.loads(config_path.read_text())
-    return config.get("exchange", {}).get("pair_whitelist", [])
+    exchange = config.get("exchange", {})
+    return (
+        exchange.get("pair_whitelist", []),
+        set(exchange.get("pair_blacklist", [])),
+    )
 
 
 def safe_name_to_pair(safe_name: str) -> str | None:
@@ -153,10 +157,11 @@ def last_timestamp(data_by_pair: dict[str, list[dict]]) -> datetime:
 
 
 def generate_signals(args: argparse.Namespace) -> list[dict]:
-    pairs = load_pairs(Path(args.config))
+    pairs, blacklist = load_config_pair_settings(Path(args.config))
     discovered_pairs = discover_pairs_from_data(Path(args.data_dir), args.timeframe)
     if len(pairs) < args.top_n and discovered_pairs:
         pairs = discovered_pairs
+    pairs = [pair for pair in pairs if pair not in blacklist]
     data_by_pair = {
         pair: load_pair_data(Path(args.data_dir), pair, args.timeframe)
         for pair in pairs
