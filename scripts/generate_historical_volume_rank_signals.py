@@ -248,10 +248,6 @@ def generate_signals(args: argparse.Namespace) -> list[dict]:
                 if short_count >= args.short_count:
                     break
 
-            if short_count < args.short_count:
-                signal_time += timedelta(days=args.rebalance_days)
-                continue
-
             for rank, row, side in selected:
                 signals.append(
                     {
