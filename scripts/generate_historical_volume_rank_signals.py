@@ -25,6 +25,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pandas as pd
+
 
 DEFAULT_CONFIG = Path("user_data/config.json")
 DEFAULT_DATA_DIR = Path("user_data/data/binance")
@@ -42,6 +44,7 @@ def pair_to_safe_name(pair: str) -> str:
 def candidate_data_files(data_dir: Path, pair: str, timeframe: str) -> list[Path]:
     safe = pair_to_safe_name(pair)
     return [
+        data_dir / "futures" / f"{safe}-{timeframe}-futures.feather",
         data_dir / "futures" / f"{safe}-{timeframe}.json",
         data_dir / f"{safe}-{timeframe}.json",
         data_dir / "futures" / f"{safe}-{timeframe}.feather",
@@ -70,16 +73,68 @@ def load_json_ohlcv(path: Path) -> list[dict]:
     return rows
 
 
+def load_feather_ohlcv(path: Path) -> list[dict]:
+    df = pd.read_feather(path)
+    rows = []
+    for item in df.to_dict("records"):
+        timestamp = item.get("date") or item.get("timestamp")
+        if timestamp is None:
+            continue
+        timestamp = pd.Timestamp(timestamp)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("UTC")
+        else:
+            timestamp = timestamp.tz_convert("UTC")
+
+        close = float(item["close"])
+        base_volume = float(item["volume"])
+        rows.append(
+            {
+                "timestamp": timestamp.to_pydatetime(),
+                "close": close,
+                "quote_volume": close * base_volume,
+            }
+        )
+    return rows
+
+
 def load_pair_data(data_dir: Path, pair: str, timeframe: str) -> list[dict]:
     for path in candidate_data_files(data_dir, pair, timeframe):
         if path.exists() and path.suffix == ".json":
             return load_json_ohlcv(path)
+        if path.exists() and path.suffix == ".feather":
+            return load_feather_ohlcv(path)
     return []
 
 
 def load_pairs(config_path: Path) -> list[str]:
     config = json.loads(config_path.read_text())
     return config.get("exchange", {}).get("pair_whitelist", [])
+
+
+def safe_name_to_pair(safe_name: str) -> str | None:
+    # BTC_USDT_USDT -> BTC/USDT:USDT
+    parts = safe_name.split("_")
+    if len(parts) < 3:
+        return None
+    base = "_".join(parts[:-2])
+    quote = parts[-2]
+    settle = parts[-1]
+    return f"{base}/{quote}:{settle}"
+
+
+def discover_pairs_from_data(data_dir: Path, timeframe: str) -> list[str]:
+    futures_dir = data_dir / "futures"
+    if not futures_dir.exists():
+        return []
+    suffix = f"-{timeframe}-futures.feather"
+    pairs = []
+    for path in sorted(futures_dir.glob(f"*{suffix}")):
+        safe_name = path.name[: -len(suffix)]
+        pair = safe_name_to_pair(safe_name)
+        if pair:
+            pairs.append(pair)
+    return pairs
 
 
 def average_quote_volume(rows: list[dict], start: datetime, end: datetime) -> tuple[float | None, int]:
@@ -99,6 +154,9 @@ def last_timestamp(data_by_pair: dict[str, list[dict]]) -> datetime:
 
 def generate_signals(args: argparse.Namespace) -> list[dict]:
     pairs = load_pairs(Path(args.config))
+    discovered_pairs = discover_pairs_from_data(Path(args.data_dir), args.timeframe)
+    if len(pairs) < args.top_n and discovered_pairs:
+        pairs = discovered_pairs
     data_by_pair = {
         pair: load_pair_data(Path(args.data_dir), pair, args.timeframe)
         for pair in pairs
@@ -204,4 +262,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
