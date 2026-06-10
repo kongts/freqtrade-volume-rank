@@ -37,6 +37,18 @@ def parse_date(value: str) -> datetime:
     return datetime.strptime(value, "%Y%m%d").replace(tzinfo=timezone.utc)
 
 
+def timeframe_to_timedelta(value: str) -> timedelta:
+    unit = value[-1]
+    amount = int(value[:-1])
+    if unit == "m":
+        return timedelta(minutes=amount)
+    if unit == "h":
+        return timedelta(hours=amount)
+    if unit == "d":
+        return timedelta(days=amount)
+    raise ValueError(f"Unsupported timeframe: {value}")
+
+
 def pair_to_safe_name(pair: str) -> str:
     return pair.replace("/", "_").replace(":", "_")
 
@@ -173,12 +185,15 @@ def generate_signals(args: argparse.Namespace) -> list[dict]:
     start = parse_date(args.timerange_start) if args.timerange_start else first_timestamp(data_by_pair)
     end = parse_date(args.timerange_end) if args.timerange_end else last_timestamp(data_by_pair)
 
+    candle_delta = timeframe_to_timedelta(args.timeframe)
     signal_time = start + timedelta(days=args.lookback_days)
     last_signal_time = end - timedelta(days=args.holding_days)
     signals = []
 
     while signal_time <= last_signal_time:
         lookback_start = signal_time - timedelta(days=args.lookback_days)
+        expected_open_time = signal_time + candle_delta
+        expected_close_time = signal_time + timedelta(days=args.holding_days) + candle_delta
         ranked = []
         for pair, rows in data_by_pair.items():
             avg_volume, bar_count = average_quote_volume(rows, lookback_start, signal_time)
@@ -206,6 +221,10 @@ def generate_signals(args: argparse.Namespace) -> list[dict]:
                     continue
                 signals.append(
                     {
+                        "rank_date": expected_open_time.date().isoformat(),
+                        "rank_cutoff": signal_time.isoformat(),
+                        "expected_open_time": expected_open_time.isoformat(),
+                        "expected_close_time": expected_close_time.isoformat(),
                         "signal_date": signal_time.date().isoformat(),
                         "hold_until": hold_until.date().isoformat(),
                         "pair": row["pair"],
@@ -223,6 +242,10 @@ def generate_signals(args: argparse.Namespace) -> list[dict]:
 def write_csv(path: Path, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fields = [
+        "rank_date",
+        "rank_cutoff",
+        "expected_open_time",
+        "expected_close_time",
         "signal_date",
         "hold_until",
         "pair",
