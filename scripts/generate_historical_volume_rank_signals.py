@@ -249,6 +249,7 @@ def generate_signals(args: argparse.Namespace) -> list[dict]:
                     break
 
             for rank, row, side in selected:
+                side_count = sum(1 for _, _, selected_side in selected if selected_side == side)
                 signals.append(
                     {
                         "rank_date": expected_open_time.date().isoformat(),
@@ -263,6 +264,8 @@ def generate_signals(args: argparse.Namespace) -> list[dict]:
                         "avg_quote_volume": row["avg_quote_volume"],
                         "lookback_bar_count": row["bar_count"],
                         "momentum_return": row["momentum"],
+                        "side_signal_count": side_count,
+                        "stake_weight": 0.5 / side_count if side_count else 0,
                     }
                 )
         signal_time += timedelta(days=args.rebalance_days)
@@ -285,6 +288,8 @@ def write_csv(path: Path, rows: list[dict]) -> None:
         "avg_quote_volume",
         "lookback_bar_count",
         "momentum_return",
+        "side_signal_count",
+        "stake_weight",
     ]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fields)

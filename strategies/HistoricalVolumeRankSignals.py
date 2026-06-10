@@ -5,7 +5,7 @@ Reads:
     user_data/signals/volume_rank_signals.csv
 
 CSV columns:
-    signal_date, hold_until, pair, side, rank, avg_quote_volume
+    signal_date, hold_until, pair, side, rank, avg_quote_volume, stake_weight
 
 The signal CSV must be generated without future leak by
 generate_historical_volume_rank_signals.py.
@@ -49,8 +49,68 @@ class HistoricalVolumeRankSignals(IStrategy):
                 signals = pd.read_csv(self.signal_path)
                 signals["signal_date"] = pd.to_datetime(signals["signal_date"], utc=True)
                 signals["hold_until"] = pd.to_datetime(signals["hold_until"], utc=True)
+                if "expected_open_time" in signals.columns:
+                    signals["expected_open_time"] = pd.to_datetime(
+                        signals["expected_open_time"], utc=True
+                    )
+                if "stake_weight" not in signals.columns:
+                    signals["stake_weight"] = 0.0
                 self._signals_cache = signals
         return self._signals_cache
+
+    def _entry_signal(self, pair: str, current_time, side: str | None):
+        signals = self._signals()
+        if signals.empty:
+            return None
+
+        timestamp = pd.Timestamp(current_time)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("UTC")
+        else:
+            timestamp = timestamp.tz_convert("UTC")
+
+        side_value = "short" if side == "short" else "long"
+        pair_signals = signals[
+            (signals["pair"] == pair)
+            & (signals["side"] == side_value)
+            & (signals["signal_date"].dt.date == timestamp.date())
+        ]
+        if pair_signals.empty and "expected_open_time" in signals.columns:
+            pair_signals = signals[
+                (signals["pair"] == pair)
+                & (signals["side"] == side_value)
+                & (signals["expected_open_time"].dt.date == timestamp.date())
+            ]
+        if pair_signals.empty:
+            return None
+        return pair_signals.iloc[0]
+
+    def custom_stake_amount(
+        self,
+        pair: str,
+        current_time,
+        current_rate: float,
+        proposed_stake: float,
+        min_stake: float | None,
+        max_stake: float,
+        leverage: float,
+        entry_tag: str | None,
+        side: str,
+        **kwargs,
+    ) -> float:
+        signal = self._entry_signal(pair, current_time, side)
+        if signal is None or not signal.get("stake_weight", 0):
+            return proposed_stake
+
+        wallet = float(self.config.get("dry_run_wallet") or 1000)
+        wallet *= float(self.config.get("tradable_balance_ratio") or 1)
+        stake = wallet * float(signal["stake_weight"])
+
+        if min_stake is not None:
+            stake = max(stake, float(min_stake))
+        if max_stake is not None and max_stake > 0:
+            stake = min(stake, float(max_stake))
+        return stake
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         return dataframe
@@ -98,4 +158,3 @@ class HistoricalVolumeRankSignals(IStrategy):
             dataframe.loc[mask, "exit_short"] = 1
 
         return dataframe
-
