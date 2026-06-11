@@ -215,7 +215,7 @@ def generate_signals(args: argparse.Namespace) -> list[dict]:
     while signal_time <= last_signal_time:
         lookback_start = signal_time - timedelta(days=args.lookback_days)
         expected_open_time = signal_time + candle_delta
-        expected_close_time = signal_time + timedelta(days=args.holding_days) + candle_delta
+        expected_close_time = signal_time + timedelta(days=args.holding_days)
         ranked = []
         for pair, rows in data_by_pair.items():
             avg_volume, bar_count = average_quote_volume(rows, lookback_start, signal_time)

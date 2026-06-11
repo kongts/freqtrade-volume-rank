@@ -26,6 +26,7 @@ class HistoricalVolumeRankSignals(IStrategy):
 
     timeframe = "2h"
     can_short = True
+    candle_delta = pd.Timedelta(hours=2)
 
     startup_candle_count = 1
     process_only_new_candles = True
@@ -152,8 +153,9 @@ class HistoricalVolumeRankSignals(IStrategy):
             return dataframe
 
         for _, signal in pair_signals.iterrows():
-            mask = dataframe["date"] >= signal["hold_until"]
-            mask &= dataframe["date"] < signal["hold_until"] + pd.Timedelta(hours=2)
+            exit_signal_time = signal["hold_until"] - self.candle_delta
+            mask = dataframe["date"] >= exit_signal_time
+            mask &= dataframe["date"] < signal["hold_until"]
             dataframe.loc[mask, "exit_long"] = 1
             dataframe.loc[mask, "exit_short"] = 1
 
